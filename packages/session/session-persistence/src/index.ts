@@ -201,6 +201,19 @@ export abstract class SessionPersistence extends Service {
    * @returns one snapshot per stored session.
    */
   abstract list(options?: SessionPersistenceListOptions): Promise<readonly SessionPersistenceSnapshot[]>
+
+  /**
+   * Permanently remove one stored session and its artifacts.
+   *
+   * The session must exist; a missing session rejects with
+   * {@link SessionPersistenceNotFoundError}. Open write handles for the id
+   * must be closed first. Removal is best-effort at the filesystem level:
+   * a missing artifact is not an error.
+   * @param id - the stored session to remove.
+   * @param options - optional cancellation.
+   * @returns resolution after the removal.
+   */
+  abstract delete(id: SessionId, options?: SessionPersistenceListOptions): Promise<void>
 }
 
 export default SessionPersistence

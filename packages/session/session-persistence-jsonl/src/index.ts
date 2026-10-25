@@ -561,6 +561,23 @@ class JsonlSessionPersistence extends SessionPersistence {
     return snapshots
   }
 
+  /**
+   * Permanently remove one stored session and its artifacts.
+   * @param id - the stored session to remove.
+   * @param options - optional cancellation.
+   */
+  async delete(id: SessionId, options?: SessionPersistenceListOptions): Promise<void> {
+    options?.signal?.throwIfAborted()
+    const snapshot = await this.stat(id, options)
+    if (snapshot === undefined) throw new SessionPersistenceNotFoundError(id)
+    const dir = sessionDir(this.root, snapshot.header.cwd, id)
+    await rm(dir, { recursive: true, force: true })
+    this.coldLogMemo.delete(id)
+    this.migrationPreparations.delete(id)
+    this.tracker.deletePending(id)
+    options?.signal?.throwIfAborted()
+  }
+
   // --- handle-facing storage internals (package-private via the handle class below) ---
 
   /** Resolve and read one stored log, refusing loudly when the artifact is absent. */

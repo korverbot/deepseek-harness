@@ -217,6 +217,23 @@ export class WorkspaceRegistry extends Service {
     this.validateStoredState(this.requireState())
     this.rebuildEntities()
     this.reportFilteredCandidates()
+    await this.sweepOldArchives()
+  }
+
+  /** Remove archived sessions older than the configured retention window. */
+  private async sweepOldArchives(): Promise<void> {
+    const retentionDays = Number(process.env.DSH_ARCHIVE_RETENTION_DAYS ?? 30)
+    if (!Number.isFinite(retentionDays) || retentionDays <= 0) return
+    if (typeof this.ctx.sessionPersistence?.delete !== 'function') return
+    const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000
+    for (const id of [...this.requireState().archivedSessionIds]) {
+      try {
+        const header = await this.readSessionHeader(id)
+        if (header.createdAt < cutoff) await this.forgetArchivedSession(id)
+      } catch (error: unknown) {
+        this.ctx.logger.warn(`workspace: retention sweep skipped session '${id}': ${String(error)}`)
+      }
+    }
   }
 
   /**
@@ -407,6 +424,45 @@ export class WorkspaceRegistry extends Service {
         archivedSessionIds: state.archivedSessionIds.filter(id => id !== sessionId),
       })
     })
+  }
+
+  /**
+   * Permanently forget one archived session: drop it from the archive set,
+   * detach it from every workspace's account, and delete its persisted log.
+   * Idempotent for ids that are not archived (they are still detached and
+   * deleted when present). Use this for retention cleanup or an explicit
+   * "forget" action.
+   * @param sessionId - The session to forget.
+   * @returns resolution after durability and deletion.
+   */
+  forgetArchivedSession(sessionId: SessionId): Promise<void> {
+    return this.enqueueOperation(async () => {
+      const state = this.requireState()
+      for (const workspaceId of state.workspaceIds) {
+        const entity = this.entities.get(workspaceId)
+        if (entity === undefined) continue
+        try { await entity.detachSession(sessionId) } catch { /* already detached */ }
+      }
+      const current = this.requireState()
+      if (current.archivedSessionIds.includes(sessionId)
+        || current.pinnedSessionIds.includes(sessionId)) {
+        await this.setState({
+          ...current,
+          archivedSessionIds: current.archivedSessionIds.filter(id => id !== sessionId),
+          pinnedSessionIds: current.pinnedSessionIds.filter(id => id !== sessionId),
+        })
+      }
+      try {
+        await this.ctx.sessionPersistence.delete(sessionId)
+      } catch (error: unknown) {
+        this.ctx.logger.warn(`workspace: forgetting session '${sessionId}' failed to delete its log: ${String(error)}`)
+      }
+    })
+  }
+
+  /** Alias for {@link forgetArchivedSession}. */
+  forgetSession(sessionId: SessionId): Promise<void> {
+    return this.forgetArchivedSession(sessionId)
   }
 
   /**
